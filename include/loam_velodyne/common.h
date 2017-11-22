@@ -41,7 +41,17 @@ inline double rad2deg(double radians)
   return radians * 180.0 / M_PI;
 }
 
+inline float rad2deg(float radians)
+{
+  return (float) (radians * 180.0 / M_PI);
+}
+
 inline double deg2rad(double degrees)
 {
   return degrees * M_PI / 180.0;
+}
+
+inline float deg2rad(float degrees)
+{
+  return (float) (degrees * M_PI / 180.0);
 }

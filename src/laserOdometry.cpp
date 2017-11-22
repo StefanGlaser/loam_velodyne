@@ -1,5 +1,6 @@
 // Copyright 2013, Ji Zhang, Carnegie Mellon University
 // Further contributions copyright (c) 2016, Southwest Research Institute
+// Further contributions copyright (c) 2017, Stefan Glaser
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -45,6 +46,15 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
+
+
+using std::sin;
+using std::cos;
+using std::asin;
+using std::atan2;
+using std::sqrt;
+using std::fabs;
+using std::pow;
 
 const float scanPeriod = 0.1;
 
@@ -98,6 +108,9 @@ float imuRollLast = 0, imuPitchLast = 0, imuYawLast = 0;
 float imuShiftFromStartX = 0, imuShiftFromStartY = 0, imuShiftFromStartZ = 0;
 float imuVeloFromStartX = 0, imuVeloFromStartY = 0, imuVeloFromStartZ = 0;
 
+
+
+
 void TransformToStart(PointType const * const pi, PointType * const po)
 {
   float s = 10 * (pi->intensity - int(pi->intensity));
@@ -122,6 +135,8 @@ void TransformToStart(PointType const * const pi, PointType * const po)
   po->z = sin(ry) * x2 + cos(ry) * z2;
   po->intensity = pi->intensity;
 }
+
+
 
 void TransformToEnd(PointType const * const pi, PointType * const po)
 {
@@ -193,6 +208,8 @@ void TransformToEnd(PointType const * const pi, PointType * const po)
   po->intensity = int(pi->intensity);
 }
 
+
+
 void PluginIMURotation(float bcx, float bcy, float bcz, float blx, float bly, float blz, 
                        float alx, float aly, float alz, float &acx, float &acy, float &acz)
 {
@@ -253,6 +270,8 @@ void PluginIMURotation(float bcx, float bcy, float bcz, float blx, float bly, fl
   acz = atan2(srzcrx / cos(acx), crzcrx / cos(acx));
 }
 
+
+
 void AccumulateRotation(float cx, float cy, float cz, float lx, float ly, float lz, 
                         float &ox, float &oy, float &oz)
 {
@@ -272,6 +291,8 @@ void AccumulateRotation(float cx, float cy, float cz, float lx, float ly, float 
   oz = atan2(srzcrx / cos(ox), crzcrx / cos(ox));
 }
 
+
+
 void laserCloudSharpHandler(const sensor_msgs::PointCloud2ConstPtr& cornerPointsSharp2)
 {
   timeCornerPointsSharp = cornerPointsSharp2->header.stamp.toSec();
@@ -282,6 +303,8 @@ void laserCloudSharpHandler(const sensor_msgs::PointCloud2ConstPtr& cornerPoints
   pcl::removeNaNFromPointCloud(*cornerPointsSharp,*cornerPointsSharp, indices);
   newCornerPointsSharp = true;
 }
+
+
 
 void laserCloudLessSharpHandler(const sensor_msgs::PointCloud2ConstPtr& cornerPointsLessSharp2)
 {
@@ -294,6 +317,8 @@ void laserCloudLessSharpHandler(const sensor_msgs::PointCloud2ConstPtr& cornerPo
   newCornerPointsLessSharp = true;
 }
 
+
+
 void laserCloudFlatHandler(const sensor_msgs::PointCloud2ConstPtr& surfPointsFlat2)
 {
   timeSurfPointsFlat = surfPointsFlat2->header.stamp.toSec();
@@ -304,6 +329,8 @@ void laserCloudFlatHandler(const sensor_msgs::PointCloud2ConstPtr& surfPointsFla
   pcl::removeNaNFromPointCloud(*surfPointsFlat,*surfPointsFlat, indices);
   newSurfPointsFlat = true;
 }
+
+
 
 void laserCloudLessFlatHandler(const sensor_msgs::PointCloud2ConstPtr& surfPointsLessFlat2)
 {
@@ -316,6 +343,8 @@ void laserCloudLessFlatHandler(const sensor_msgs::PointCloud2ConstPtr& surfPoint
   newSurfPointsLessFlat = true;
 }
 
+
+
 void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudFullRes2)
 {
   timeLaserCloudFullRes = laserCloudFullRes2->header.stamp.toSec();
@@ -326,6 +355,8 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloud
   pcl::removeNaNFromPointCloud(*laserCloudFullRes,*laserCloudFullRes, indices);
   newLaserCloudFullRes = true;
 }
+
+
 
 void imuTransHandler(const sensor_msgs::PointCloud2ConstPtr& imuTrans2)
 {
@@ -354,6 +385,14 @@ void imuTransHandler(const sensor_msgs::PointCloud2ConstPtr& imuTrans2)
 }
 
 
+
+/**
+ * The main function.
+ *
+ * @param argc
+ * @param argv
+ * @return
+ */
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "laserOdometry");
@@ -407,6 +446,9 @@ int main(int argc, char** argv)
   int frameCount = skipFrameNum;
   ros::Rate rate(100);
   bool status = ros::ok();
+
+
+  // main loop
   while (status) {
     ros::spinOnce();
 
@@ -425,6 +467,7 @@ int main(int argc, char** argv)
       newImuTrans = false;
 
       if (!systemInited) {
+        // initialize xxx-Last clouds
         pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsLessSharp;
         cornerPointsLessSharp = laserCloudCornerLast;
         laserCloudCornerLast = laserCloudTemp;
@@ -448,6 +491,7 @@ int main(int argc, char** argv)
         laserCloudSurfLast2.header.frame_id = "/camera";
         pubLaserCloudSurfLast.publish(laserCloudSurfLast2);
 
+        // initialize IMU transform sum
         transformSum[0] += imuPitchStart;
         transformSum[2] += imuRollStart;
 
@@ -464,6 +508,7 @@ int main(int argc, char** argv)
         pcl::removeNaNFromPointCloud(*cornerPointsSharp,*cornerPointsSharp, indices);
         int cornerPointsSharpNum = cornerPointsSharp->points.size();
         int surfPointsFlatNum = surfPointsFlat->points.size();
+
         for (int iterCount = 0; iterCount < 25; iterCount++) {
           laserCloudOri->clear();
           coeffSel->clear();
@@ -566,7 +611,7 @@ int main(int argc, char** argv)
 
               float s = 1;
               if (iterCount >= 5) {
-                s = 1 - 1.8 * fabs(ld2);
+                s = 1 - 1.8f * fabs(ld2);
               }
 
               coeff.x = s * la;
@@ -675,7 +720,7 @@ int main(int argc, char** argv)
 
               float s = 1;
               if (iterCount >= 5) {
-                s = 1 - 1.8 * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
+                s = 1 - 1.8f * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
                   + pointSel.y * pointSel.y + pointSel.z * pointSel.z));
               }
 
@@ -757,7 +802,7 @@ int main(int argc, char** argv)
             matA.at<float>(i, 3) = atx;
             matA.at<float>(i, 4) = aty;
             matA.at<float>(i, 5) = atz;
-            matB.at<float>(i, 0) = -0.05 * d2;
+            matB.at<float>(i, 0) = -0.05f * d2;
           }
           cv::transpose(matA, matAt);
           matAtA = matAt * matA;
@@ -821,13 +866,13 @@ int main(int argc, char** argv)
 
       float rx, ry, rz, tx, ty, tz;
       AccumulateRotation(transformSum[0], transformSum[1], transformSum[2], 
-                         -transform[0], -transform[1] * 1.05, -transform[2], rx, ry, rz);
+                         -transform[0], -transform[1] * 1.05f, -transform[2], rx, ry, rz);
 
       float x1 = cos(rz) * (transform[3] - imuShiftFromStartX) 
                - sin(rz) * (transform[4] - imuShiftFromStartY);
       float y1 = sin(rz) * (transform[3] - imuShiftFromStartX) 
                + cos(rz) * (transform[4] - imuShiftFromStartY);
-      float z1 = transform[5] * 1.05 - imuShiftFromStartZ;
+      float z1 = transform[5] * 1.05f - imuShiftFromStartZ;
 
       float x2 = x1;
       float y2 = cos(rx) * y1 - sin(rx) * z1;

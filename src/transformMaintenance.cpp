@@ -1,5 +1,6 @@
 // Copyright 2013, Ji Zhang, Carnegie Mellon University
 // Further contributions copyright (c) 2016, Southwest Research Institute
+// Further contributions copyright (c) 2017, Stefan Glaser
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -46,6 +47,11 @@
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
 
+using std::sin;
+using std::cos;
+using std::asin;
+using std::atan2;
+
 float transformSum[6] = {0};
 float transformIncre[6] = {0};
 float transformMapped[6] = {0};
@@ -57,6 +63,11 @@ tf::TransformBroadcaster *tfBroadcaster2Pointer = NULL;
 nav_msgs::Odometry laserOdometry2;
 tf::StampedTransform laserOdometryTrans2;
 
+
+
+/**
+ * Transform the current high-frequency odometry to the global map.
+ */
 void transformAssociateToMap()
 {
   float x1 = cos(transformSum[1]) * (transformBefMapped[3] - transformSum[3]) 
@@ -144,19 +155,26 @@ void transformAssociateToMap()
                      - (-sin(transformMapped[1]) * x2 + cos(transformMapped[1]) * z2);
 }
 
+
+
+/**
+ * Handler function for odometry messages from the (high-frequent) laser-odometery component.
+ *
+ * @param laserOdometry
+ */
 void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr& laserOdometry)
 {
   double roll, pitch, yaw;
   geometry_msgs::Quaternion geoQuat = laserOdometry->pose.pose.orientation;
   tf::Matrix3x3(tf::Quaternion(geoQuat.z, -geoQuat.x, -geoQuat.y, geoQuat.w)).getRPY(roll, pitch, yaw);
 
-  transformSum[0] = -pitch;
-  transformSum[1] = -yaw;
-  transformSum[2] = roll;
+  transformSum[0] = float(-pitch);
+  transformSum[1] = float(-yaw);
+  transformSum[2] = float(roll);
 
-  transformSum[3] = laserOdometry->pose.pose.position.x;
-  transformSum[4] = laserOdometry->pose.pose.position.y;
-  transformSum[5] = laserOdometry->pose.pose.position.z;
+  transformSum[3] = float(laserOdometry->pose.pose.position.x);
+  transformSum[4] = float(laserOdometry->pose.pose.position.y);
+  transformSum[5] = float(laserOdometry->pose.pose.position.z);
 
   transformAssociateToMap();
 
@@ -179,29 +197,45 @@ void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr& laserOdometry)
   tfBroadcaster2Pointer->sendTransform(laserOdometryTrans2);
 }
 
+
+
+/**
+ * Handler function for odometry messages from the (low-frequent) laser-mapping component.
+ *
+ * @param odomAftMapped
+ */
 void odomAftMappedHandler(const nav_msgs::Odometry::ConstPtr& odomAftMapped)
 {
   double roll, pitch, yaw;
   geometry_msgs::Quaternion geoQuat = odomAftMapped->pose.pose.orientation;
   tf::Matrix3x3(tf::Quaternion(geoQuat.z, -geoQuat.x, -geoQuat.y, geoQuat.w)).getRPY(roll, pitch, yaw);
 
-  transformAftMapped[0] = -pitch;
-  transformAftMapped[1] = -yaw;
-  transformAftMapped[2] = roll;
+  transformAftMapped[0] = float(-pitch);
+  transformAftMapped[1] = float(-yaw);
+  transformAftMapped[2] = float(roll);
 
-  transformAftMapped[3] = odomAftMapped->pose.pose.position.x;
-  transformAftMapped[4] = odomAftMapped->pose.pose.position.y;
-  transformAftMapped[5] = odomAftMapped->pose.pose.position.z;
+  transformAftMapped[3] = float(odomAftMapped->pose.pose.position.x);
+  transformAftMapped[4] = float(odomAftMapped->pose.pose.position.y);
+  transformAftMapped[5] = float(odomAftMapped->pose.pose.position.z);
 
-  transformBefMapped[0] = odomAftMapped->twist.twist.angular.x;
-  transformBefMapped[1] = odomAftMapped->twist.twist.angular.y;
-  transformBefMapped[2] = odomAftMapped->twist.twist.angular.z;
+  transformBefMapped[0] = float(odomAftMapped->twist.twist.angular.x);
+  transformBefMapped[1] = float(odomAftMapped->twist.twist.angular.y);
+  transformBefMapped[2] = float(odomAftMapped->twist.twist.angular.z);
 
-  transformBefMapped[3] = odomAftMapped->twist.twist.linear.x;
-  transformBefMapped[4] = odomAftMapped->twist.twist.linear.y;
-  transformBefMapped[5] = odomAftMapped->twist.twist.linear.z;
+  transformBefMapped[3] = float(odomAftMapped->twist.twist.linear.x);
+  transformBefMapped[4] = float(odomAftMapped->twist.twist.linear.y);
+  transformBefMapped[5] = float(odomAftMapped->twist.twist.linear.z);
 }
 
+
+
+/**
+ * The main function.
+ *
+ * @param argc
+ * @param argv
+ * @return
+ */
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "transformMaintenance");

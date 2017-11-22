@@ -8,16 +8,19 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   std_msgs
-  tf)
+  tf
+  velodyne_driver
+  velodyne_msgs
+  velodyne_pointcloud)
 
-#find_package(Eigen3 REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(PCL REQUIRED)
 find_package(OpenCV REQUIRED)
 
 include_directories(
   include
-	${catkin_INCLUDE_DIRS} 
-#	${EIGEN3_INCLUDE_DIR}
+	${catkin_INCLUDE_DIRS}
+	${EIGEN3_INCLUDE_DIR}
 	${PCL_INCLUDE_DIRS})
 
 catkin_package(

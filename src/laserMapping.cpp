@@ -1,5 +1,6 @@
 // Copyright 2013, Ji Zhang, Carnegie Mellon University
 // Further contributions copyright (c) 2016, Southwest Research Institute
+// Further contributions copyright (c) 2017, Stefan Glaser
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -46,8 +47,17 @@
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
 
-const float scanPeriod = 0.1;
 
+using std::sin;
+using std::cos;
+using std::asin;
+using std::atan2;
+using std::sqrt;
+using std::fabs;
+using std::pow;
+
+
+const float scanPeriod = 0.1;
 const int stackFrameNum = 1;
 const int mapFrameNum = 5;
 
@@ -107,6 +117,11 @@ double imuTime[imuQueLength] = {0};
 float imuRoll[imuQueLength] = {0};
 float imuPitch[imuQueLength] = {0};
 
+
+
+/**
+ * Transform the current high-frequency odometry to the global map.
+ */
 void transformAssociateToMap()
 {
   float x1 = cos(transformSum[1]) * (transformBefMapped[3] - transformSum[3]) 
@@ -194,6 +209,8 @@ void transformAssociateToMap()
                          - (-sin(transformTobeMapped[1]) * x2 + cos(transformTobeMapped[1]) * z2);
 }
 
+
+
 void transformUpdate()
 {
   if (imuPointerLast >= 0) {
@@ -210,17 +227,17 @@ void transformUpdate()
       imuPitchLast = imuPitch[imuPointerFront];
     } else {
       int imuPointerBack = (imuPointerFront + imuQueLength - 1) % imuQueLength;
-      float ratioFront = (timeLaserOdometry + scanPeriod - imuTime[imuPointerBack]) 
-                       / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
-      float ratioBack = (imuTime[imuPointerFront] - timeLaserOdometry - scanPeriod) 
-                      / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
+      float ratioFront = float((timeLaserOdometry + scanPeriod - imuTime[imuPointerBack])
+                       / (imuTime[imuPointerFront] - imuTime[imuPointerBack]));
+      float ratioBack = float((imuTime[imuPointerFront] - timeLaserOdometry - scanPeriod)
+                      / (imuTime[imuPointerFront] - imuTime[imuPointerBack]));
 
       imuRollLast = imuRoll[imuPointerFront] * ratioFront + imuRoll[imuPointerBack] * ratioBack;
       imuPitchLast = imuPitch[imuPointerFront] * ratioFront + imuPitch[imuPointerBack] * ratioBack;
     }
 
-    transformTobeMapped[0] = 0.998 * transformTobeMapped[0] + 0.002 * imuPitchLast;
-    transformTobeMapped[2] = 0.998 * transformTobeMapped[2] + 0.002 * imuRollLast;
+    transformTobeMapped[0] = 0.998f * transformTobeMapped[0] + 0.002f * imuPitchLast;
+    transformTobeMapped[2] = 0.998f * transformTobeMapped[2] + 0.002f * imuRollLast;
   }
 
   for (int i = 0; i < 6; i++) {
@@ -228,6 +245,8 @@ void transformUpdate()
     transformAftMapped[i] = transformTobeMapped[i];
   }
 }
+
+
 
 void pointAssociateToMap(PointType const * const pi, PointType * const po)
 {
@@ -249,6 +268,8 @@ void pointAssociateToMap(PointType const * const pi, PointType * const po)
   po->intensity = pi->intensity;
 }
 
+
+
 void pointAssociateTobeMapped(PointType const * const pi, PointType * const po)
 {
   float x1 = cos(transformTobeMapped[1]) * (pi->x - transformTobeMapped[3]) 
@@ -269,6 +290,8 @@ void pointAssociateTobeMapped(PointType const * const pi, PointType * const po)
   po->intensity = pi->intensity;
 }
 
+
+
 void laserCloudCornerLastHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudCornerLast2)
 {
   timeLaserCloudCornerLast = laserCloudCornerLast2->header.stamp.toSec();
@@ -278,6 +301,8 @@ void laserCloudCornerLastHandler(const sensor_msgs::PointCloud2ConstPtr& laserCl
 
   newLaserCloudCornerLast = true;
 }
+
+
 
 void laserCloudSurfLastHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudSurfLast2)
 {
@@ -289,6 +314,8 @@ void laserCloudSurfLastHandler(const sensor_msgs::PointCloud2ConstPtr& laserClou
   newLaserCloudSurfLast = true;
 }
 
+
+
 void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudFullRes2)
 {
   timeLaserCloudFullRes = laserCloudFullRes2->header.stamp.toSec();
@@ -299,6 +326,8 @@ void laserCloudFullResHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloud
   newLaserCloudFullRes = true;
 }
 
+
+
 void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr& laserOdometry)
 {
   timeLaserOdometry = laserOdometry->header.stamp.toSec();
@@ -307,16 +336,18 @@ void laserOdometryHandler(const nav_msgs::Odometry::ConstPtr& laserOdometry)
   geometry_msgs::Quaternion geoQuat = laserOdometry->pose.pose.orientation;
   tf::Matrix3x3(tf::Quaternion(geoQuat.z, -geoQuat.x, -geoQuat.y, geoQuat.w)).getRPY(roll, pitch, yaw);
 
-  transformSum[0] = -pitch;
-  transformSum[1] = -yaw;
-  transformSum[2] = roll;
+  transformSum[0] = float(-pitch);
+  transformSum[1] = float(-yaw);
+  transformSum[2] = float(roll);
 
-  transformSum[3] = laserOdometry->pose.pose.position.x;
-  transformSum[4] = laserOdometry->pose.pose.position.y;
-  transformSum[5] = laserOdometry->pose.pose.position.z;
+  transformSum[3] = float(laserOdometry->pose.pose.position.x);
+  transformSum[4] = float(laserOdometry->pose.pose.position.y);
+  transformSum[5] = float(laserOdometry->pose.pose.position.z);
 
   newLaserOdometry = true;
 }
+
+
 
 void imuHandler(const sensor_msgs::Imu::ConstPtr& imuIn)
 {
@@ -328,10 +359,19 @@ void imuHandler(const sensor_msgs::Imu::ConstPtr& imuIn)
   imuPointerLast = (imuPointerLast + 1) % imuQueLength;
 
   imuTime[imuPointerLast] = imuIn->header.stamp.toSec();
-  imuRoll[imuPointerLast] = roll;
-  imuPitch[imuPointerLast] = pitch;
+  imuRoll[imuPointerLast] = float(roll);
+  imuPitch[imuPointerLast] = float(pitch);
 }
 
+
+
+/**
+ * The main function.
+ *
+ * @param argc
+ * @param argv
+ * @return
+ */
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "laserMapping");
@@ -403,6 +443,9 @@ int main(int argc, char** argv)
   int mapFrameCount = mapFrameNum - 1;
   ros::Rate rate(100);
   bool status = ros::ok();
+
+
+  // main loop
   while (status) {
     ros::spinOnce();
 
@@ -620,17 +663,17 @@ int main(int argc, char** argv)
                   j >= 0 && j < laserCloudHeight && 
                   k >= 0 && k < laserCloudDepth) {
 
-                float centerX = 50.0 * (i - laserCloudCenWidth);
-                float centerY = 50.0 * (j - laserCloudCenHeight);
-                float centerZ = 50.0 * (k - laserCloudCenDepth);
+                float centerX = 50.0f * (i - laserCloudCenWidth);
+                float centerY = 50.0f * (j - laserCloudCenHeight);
+                float centerZ = 50.0f * (k - laserCloudCenDepth);
 
                 bool isInLaserFOV = false;
                 for (int ii = -1; ii <= 1; ii += 2) {
                   for (int jj = -1; jj <= 1; jj += 2) {
                     for (int kk = -1; kk <= 1; kk += 2) {
-                      float cornerX = centerX + 25.0 * ii;
-                      float cornerY = centerY + 25.0 * jj;
-                      float cornerZ = centerZ + 25.0 * kk;
+                      float cornerX = centerX + 25.0f * ii;
+                      float cornerY = centerY + 25.0f * jj;
+                      float cornerZ = centerZ + 25.0f * kk;
 
                       float squaredSide1 = (transformTobeMapped[3] - cornerX) 
                                          * (transformTobeMapped[3] - cornerX) 
@@ -643,11 +686,11 @@ int main(int argc, char** argv)
                                          + (pointOnYAxis.y - cornerY) * (pointOnYAxis.y - cornerY)
                                          + (pointOnYAxis.z - cornerZ) * (pointOnYAxis.z - cornerZ);
 
-                      float check1 = 100.0 + squaredSide1 - squaredSide2
-                                   - 10.0 * sqrt(3.0) * sqrt(squaredSide1);
+                      float check1 = 100.0f + squaredSide1 - squaredSide2
+                                   - 10.0f * sqrt(3.0f) * sqrt(squaredSide1);
 
-                      float check2 = 100.0 + squaredSide1 - squaredSide2
-                                   + 10.0 * sqrt(3.0) * sqrt(squaredSide1);
+                      float check2 = 100.0f + squaredSide1 - squaredSide2
+                                   + 10.0f * sqrt(3.0f) * sqrt(squaredSide1);
 
                       if (check1 < 0 && check2 > 0) {
                         isInLaserFOV = true;
@@ -769,12 +812,12 @@ int main(int argc, char** argv)
                   float x0 = pointSel.x;
                   float y0 = pointSel.y;
                   float z0 = pointSel.z;
-                  float x1 = cx + 0.1 * matV1.at<float>(0, 0);
-                  float y1 = cy + 0.1 * matV1.at<float>(0, 1);
-                  float z1 = cz + 0.1 * matV1.at<float>(0, 2);
-                  float x2 = cx - 0.1 * matV1.at<float>(0, 0);
-                  float y2 = cy - 0.1 * matV1.at<float>(0, 1);
-                  float z2 = cz - 0.1 * matV1.at<float>(0, 2);
+                  float x1 = cx + 0.1f * matV1.at<float>(0, 0);
+                  float y1 = cy + 0.1f * matV1.at<float>(0, 1);
+                  float z1 = cz + 0.1f * matV1.at<float>(0, 2);
+                  float x2 = cx - 0.1f * matV1.at<float>(0, 0);
+                  float y2 = cy - 0.1f * matV1.at<float>(0, 1);
+                  float z2 = cz - 0.1f * matV1.at<float>(0, 2);
 
                   float a012 = sqrt(((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1))
                              * ((x0 - x1)*(y0 - y2) - (x0 - x2)*(y0 - y1)) 
@@ -801,7 +844,7 @@ int main(int argc, char** argv)
                   pointProj.y -= lb * ld2;
                   pointProj.z -= lc * ld2;
 
-                  float s = 1 - 0.9 * fabs(ld2);
+                  float s = 1 - 0.9f * fabs(ld2);
 
                   coeff.x = s * la;
                   coeff.y = s * lb;
@@ -858,7 +901,7 @@ int main(int argc, char** argv)
                   pointProj.y -= pb * pd2;
                   pointProj.z -= pc * pd2;
 
-                  float s = 1 - 0.9 * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
+                  float s = 1 - 0.9f * fabs(pd2) / sqrt(sqrt(pointSel.x * pointSel.x
                           + pointSel.y * pointSel.y + pointSel.z * pointSel.z));
 
                   coeff.x = s * pa;
@@ -915,6 +958,7 @@ int main(int argc, char** argv)
               matA.at<float>(i, 3) = coeff.x;
               matA.at<float>(i, 4) = coeff.y;
               matA.at<float>(i, 5) = coeff.z;
+
               matB.at<float>(i, 0) = -coeff.intensity;
             }
             cv::transpose(matA, matAt);

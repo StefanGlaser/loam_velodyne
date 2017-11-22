@@ -1,5 +1,6 @@
 // Copyright 2013, Ji Zhang, Carnegie Mellon University
 // Further contributions copyright (c) 2016, Southwest Research Institute
+// Further contributions copyright (c) 2017, Stefan Glaser
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -47,18 +48,46 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
+#include <velodyne_pointcloud/point_types.h> 
+#include <velodyne_pointcloud/rawdata.h>
 
 using std::sin;
 using std::cos;
+using std::atan;
 using std::atan2;
+using std::sqrt;
 
-const double scanPeriod = 0.1;
+
+/*typedef enum CloudLabel {
+  INIT = 0,
+  NEIGHBOR_PICKED = 1,
+  SURFACE_FLAT = 2,
+  SURFACE_LESS_FLAT = 3,
+  CORNER_SHARP = 4,
+  CORNER_LESS_SHARP = 5
+} CloudLabel;*/
+
+
+const float scanPeriod = 0.1;
 
 const int systemDelay = 20;
 int systemInitCount = 0;
 bool systemInited = false;
 
-const int N_SCANS = 16;
+/**
+ * The number of scan rings of the Velodyne lidar.
+ *
+ * VLP-16 -> 16
+ * VLP-32 -> 32
+ * VLP-64 -> 64
+ */
+size_t N_SCANS = 16;
+
+/** The number of (equally distributed) regions used to distribute the feature extraction within a scan ring. */
+// size_t N_REGIONS = 6;
+
+/** The number of surrounding points used to calculate a point curvature. */
+// size_t N_CURVATURE_REGION = 5;
 
 float cloudCurvature[40000];
 int cloudSortInd[40000];
@@ -105,6 +134,9 @@ ros::Publisher pubSurfPointsFlat;
 ros::Publisher pubSurfPointsLessFlat;
 ros::Publisher pubImuTrans;
 
+
+
+
 void ShiftToStartIMU(float pointTime)
 {
   imuShiftFromStartXCur = imuShiftXCur - imuShiftXStart - imuVeloXStart * pointTime;
@@ -124,6 +156,8 @@ void ShiftToStartIMU(float pointTime)
   imuShiftFromStartZCur = z2;
 }
 
+
+
 void VeloToStartIMU()
 {
   imuVeloFromStartXCur = imuVeloXCur - imuVeloXStart;
@@ -142,6 +176,8 @@ void VeloToStartIMU()
   imuVeloFromStartYCur = -sin(imuRollStart) * x2 + cos(imuRollStart) * y2;
   imuVeloFromStartZCur = z2;
 }
+
+
 
 void TransformToStartIMU(PointType *p)
 {
@@ -170,6 +206,8 @@ void TransformToStartIMU(PointType *p)
   p->z = z5 + imuShiftFromStartZCur;
 }
 
+
+
 void AccumulateIMUShift()
 {
   float roll = imuRoll[imuPointerLast];
@@ -195,19 +233,35 @@ void AccumulateIMUShift()
   double timeDiff = imuTime[imuPointerLast] - imuTime[imuPointerBack];
   if (timeDiff < scanPeriod) {
 
-    imuShiftX[imuPointerLast] = imuShiftX[imuPointerBack] + imuVeloX[imuPointerBack] * timeDiff 
-                              + accX * timeDiff * timeDiff / 2;
-    imuShiftY[imuPointerLast] = imuShiftY[imuPointerBack] + imuVeloY[imuPointerBack] * timeDiff 
-                              + accY * timeDiff * timeDiff / 2;
-    imuShiftZ[imuPointerLast] = imuShiftZ[imuPointerBack] + imuVeloZ[imuPointerBack] * timeDiff 
-                              + accZ * timeDiff * timeDiff / 2;
+    imuShiftX[imuPointerLast] = float(imuShiftX[imuPointerBack] + imuVeloX[imuPointerBack] * timeDiff
+                              + accX * timeDiff * timeDiff / 2);
+    imuShiftY[imuPointerLast] = float(imuShiftY[imuPointerBack] + imuVeloY[imuPointerBack] * timeDiff
+                              + accY * timeDiff * timeDiff / 2);
+    imuShiftZ[imuPointerLast] = float(imuShiftZ[imuPointerBack] + imuVeloZ[imuPointerBack] * timeDiff
+                              + accZ * timeDiff * timeDiff / 2);
 
-    imuVeloX[imuPointerLast] = imuVeloX[imuPointerBack] + accX * timeDiff;
-    imuVeloY[imuPointerLast] = imuVeloY[imuPointerBack] + accY * timeDiff;
-    imuVeloZ[imuPointerLast] = imuVeloZ[imuPointerBack] + accZ * timeDiff;
+    imuVeloX[imuPointerLast] = float(imuVeloX[imuPointerBack] + accX * timeDiff);
+    imuVeloY[imuPointerLast] = float(imuVeloY[imuPointerBack] + accY * timeDiff);
+    imuVeloZ[imuPointerLast] = float(imuVeloZ[imuPointerBack] + accZ * timeDiff);
   }
 }
 
+
+
+/**
+ * Handler function for incoming point clouds.
+ *
+ * This function implements the scan-registration part of the LOAM framework.
+ * It will:
+ * - discard invalid points
+ * - sort points based on their scan ring
+ * - extract corner and flat feature points
+ *
+ * In case IMU information is available, it is used to register the points
+ * into the local system at the end of the measurement interval.
+ *
+ * @param laserCloudMsg The new point cloud message.
+ */
 void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
 {
   if (!systemInited) {
@@ -220,16 +274,15 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
 
   std::vector<int> scanStartInd(N_SCANS, 0);
   std::vector<int> scanEndInd(N_SCANS, 0);
-  
+
   double timeScanCur = laserCloudMsg->header.stamp.toSec();
-  pcl::PointCloud<pcl::PointXYZ> laserCloudIn;
+  pcl::PointCloud<velodyne_pointcloud::PointXYZIR> laserCloudIn;
+
   pcl::fromROSMsg(*laserCloudMsg, laserCloudIn);
-  std::vector<int> indices;
-  pcl::removeNaNFromPointCloud(laserCloudIn, laserCloudIn, indices);
   int cloudSize = laserCloudIn.points.size();
   float startOri = -atan2(laserCloudIn.points[0].y, laserCloudIn.points[0].x);
-  float endOri = -atan2(laserCloudIn.points[cloudSize - 1].y,
-                        laserCloudIn.points[cloudSize - 1].x) + 2 * M_PI;
+  float endOri = float(-atan2(laserCloudIn.points[cloudSize - 1].y,
+                        laserCloudIn.points[cloudSize - 1].x) + 2 * M_PI);
 
   if (endOri - startOri > 3 * M_PI) {
     endOri -= 2 * M_PI;
@@ -240,25 +293,40 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
   int count = cloudSize;
   PointType point;
   std::vector<pcl::PointCloud<PointType> > laserCloudScans(N_SCANS);
+
+
+  // --------------------------------------------------------------------------
+  // Step 1.1: Extract, sort and register new points in local system
+  // -- Extract:  Discard NaN and zero valued points.
+  // -- Sort:     Sort new points based on their ring number.
+  // -- Register: Use IMU information (if available) to register points in the local system.
   for (int i = 0; i < cloudSize; i++) {
     point.x = laserCloudIn.points[i].y;
     point.y = laserCloudIn.points[i].z;
     point.z = laserCloudIn.points[i].x;
 
-    float angle = atan(point.y / sqrt(point.x * point.x + point.z * point.z)) * 180 / M_PI;
-    int scanID;
-    int roundedAngle = int(angle + (angle<0.0?-0.5:+0.5)); 
-    if (roundedAngle > 0){
-      scanID = roundedAngle;
-    }
-    else {
-      scanID = roundedAngle + (N_SCANS - 1);
-    }
-    if (scanID > (N_SCANS - 1) || scanID < 0 ){
+    // discard NaN valued points
+    if (!pcl_isfinite (point.x) ||
+        !pcl_isfinite (point.y) ||
+        !pcl_isfinite (point.z)) {
       count--;
       continue;
     }
 
+    // discard zero valued points
+    if (point.x * point.x * point.y * point.y + point.z * point.z < 0.0001) {
+      count--;
+      continue;
+    }
+
+    // evaluate ring number
+    uint16_t ringID = laserCloudIn.points[i].ring;
+    if (ringID >= N_SCANS){
+      count--;
+      continue;
+    }
+
+    // extract horizontal point orientation
     float ori = -atan2(point.x, point.z);
     if (!halfPassed) {
       if (ori < startOri - M_PI / 2) {
@@ -281,8 +349,9 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     }
 
     float relTime = (ori - startOri) / (endOri - startOri);
-    point.intensity = scanID + scanPeriod * relTime;
+    point.intensity = ringID + scanPeriod * relTime;
 
+    // register new points into local system using the IMU
     if (imuPointerLast >= 0) {
       float pointTime = relTime * scanPeriod;
       while (imuPointerFront != imuPointerLast) {
@@ -306,17 +375,17 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
         imuShiftZCur = imuShiftZ[imuPointerFront];
       } else {
         int imuPointerBack = (imuPointerFront + imuQueLength - 1) % imuQueLength;
-        float ratioFront = (timeScanCur + pointTime - imuTime[imuPointerBack]) 
-                         / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
-        float ratioBack = (imuTime[imuPointerFront] - timeScanCur - pointTime) 
-                        / (imuTime[imuPointerFront] - imuTime[imuPointerBack]);
+        float ratioFront = float((timeScanCur + pointTime - imuTime[imuPointerBack])
+                         / (imuTime[imuPointerFront] - imuTime[imuPointerBack]));
+        float ratioBack = float((imuTime[imuPointerFront] - timeScanCur - pointTime)
+                        / (imuTime[imuPointerFront] - imuTime[imuPointerBack]));
 
         imuRollCur = imuRoll[imuPointerFront] * ratioFront + imuRoll[imuPointerBack] * ratioBack;
         imuPitchCur = imuPitch[imuPointerFront] * ratioFront + imuPitch[imuPointerBack] * ratioBack;
         if (imuYaw[imuPointerFront] - imuYaw[imuPointerBack] > M_PI) {
-          imuYawCur = imuYaw[imuPointerFront] * ratioFront + (imuYaw[imuPointerBack] + 2 * M_PI) * ratioBack;
+          imuYawCur = float(imuYaw[imuPointerFront] * ratioFront + (imuYaw[imuPointerBack] + 2 * M_PI) * ratioBack);
         } else if (imuYaw[imuPointerFront] - imuYaw[imuPointerBack] < -M_PI) {
-          imuYawCur = imuYaw[imuPointerFront] * ratioFront + (imuYaw[imuPointerBack] - 2 * M_PI) * ratioBack;
+          imuYawCur = float(imuYaw[imuPointerFront] * ratioFront + (imuYaw[imuPointerBack] - 2 * M_PI) * ratioBack);
         } else {
           imuYawCur = imuYaw[imuPointerFront] * ratioFront + imuYaw[imuPointerBack] * ratioBack;
         }
@@ -329,6 +398,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
         imuShiftYCur = imuShiftY[imuPointerFront] * ratioFront + imuShiftY[imuPointerBack] * ratioBack;
         imuShiftZCur = imuShiftZ[imuPointerFront] * ratioFront + imuShiftZ[imuPointerBack] * ratioBack;
       }
+
       if (i == 0) {
         imuRollStart = imuRollCur;
         imuPitchStart = imuPitchCur;
@@ -347,14 +417,22 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
         TransformToStartIMU(&point);
       }
     }
-    laserCloudScans[scanID].push_back(point);
+
+    // store point in corresponding ring cloud
+    laserCloudScans[ringID].push_back(point);
   }
+
   cloudSize = count;
 
-  pcl::PointCloud<PointType>::Ptr laserCloud(new pcl::PointCloud<PointType>());
+  // construct sorted, full resolution point cloud
+  pcl::PointCloud<PointType>::Ptr laserCloud(new pcl::PointCloud<PointType>(cloudSize, 1));
   for (int i = 0; i < N_SCANS; i++) {
     *laserCloud += laserCloudScans[i];
   }
+
+
+  // --------------------------------------------------------------------------
+  // Step 1.2: Calculate point curvatures
   int scanCount = -1;
   for (int i = 5; i < cloudSize - 5; i++) {
     float diffX = laserCloud->points[i - 5].x + laserCloud->points[i - 4].x 
@@ -392,6 +470,9 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
   scanStartInd[0] = 5;
   scanEndInd.back() = cloudSize - 5;
 
+
+  // --------------------------------------------------------------------------
+  // Step 1.3: Mark unreliable points as picked
   for (int i = 5; i < cloudSize - 6; i++) {
     float diffX = laserCloud->points[i + 1].x - laserCloud->points[i].x;
     float diffY = laserCloud->points[i + 1].y - laserCloud->points[i].y;
@@ -452,17 +533,25 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
   }
 
 
+  // --------------------------------------------------------------------------
+  // Step 1.4: Extract feature points
   pcl::PointCloud<PointType> cornerPointsSharp;
   pcl::PointCloud<PointType> cornerPointsLessSharp;
   pcl::PointCloud<PointType> surfPointsFlat;
   pcl::PointCloud<PointType> surfPointsLessFlat;
 
+  // iterate over each ring and extract feature points
   for (int i = 0; i < N_SCANS; i++) {
     pcl::PointCloud<PointType>::Ptr surfPointsLessFlatScan(new pcl::PointCloud<PointType>);
+
+    // Distribute feature extraction across multiple regions of equal size.
+    // Each region can provide at most 2 sharp corners and 20 less sharp corners,
+    // as well as at most 4 flat surface points.
     for (int j = 0; j < 6; j++) {
       int sp = (scanStartInd[i] * (6 - j)  + scanEndInd[i] * j) / 6;
       int ep = (scanStartInd[i] * (5 - j)  + scanEndInd[i] * (j + 1)) / 6 - 1;
 
+      // sort features from low to high curvature
       for (int k = sp + 1; k <= ep; k++) {
         for (int l = k; l >= sp + 1; l--) {
           if (cloudCurvature[cloudSortInd[l]] < cloudCurvature[cloudSortInd[l - 1]]) {
@@ -473,6 +562,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
         }
       }
 
+      // extract corner points
       int largestPickedNum = 0;
       for (int k = ep; k >= sp; k--) {
         int ind = cloudSortInd[k];
@@ -521,6 +611,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
         }
       }
 
+      // extract flat surface points
       int smallestPickedNum = 0;
       for (int k = sp; k <= ep; k++) {
         int ind = cloudSortInd[k];
@@ -565,6 +656,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
         }
       }
 
+      // extract less flat surface points
       for (int k = sp; k <= ep; k++) {
         if (cloudLabel[k] <= 0) {
           surfPointsLessFlatScan->push_back(laserCloud->points[k]);
@@ -572,6 +664,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
       }
     }
 
+    // downsize less flat surface points
     pcl::PointCloud<PointType> surfPointsLessFlatScanDS;
     pcl::VoxelGrid<PointType> downSizeFilter;
     downSizeFilter.setInputCloud(surfPointsLessFlatScan);
@@ -581,6 +674,9 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     surfPointsLessFlat += surfPointsLessFlatScanDS;
   }
 
+
+  // --------------------------------------------------------------------------
+  // publish results
   sensor_msgs::PointCloud2 laserCloudOutMsg;
   pcl::toROSMsg(*laserCloud, laserCloudOutMsg);
   laserCloudOutMsg.header.stamp = laserCloudMsg->header.stamp;
@@ -635,6 +731,13 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
   pubImuTrans.publish(imuTransMsg);
 }
 
+
+
+/**
+ * IMU message handler.
+ *
+ * @param imuIn The new IMU message.
+ */
 void imuHandler(const sensor_msgs::Imu::ConstPtr& imuIn)
 {
   double roll, pitch, yaw;
@@ -642,23 +745,28 @@ void imuHandler(const sensor_msgs::Imu::ConstPtr& imuIn)
   tf::quaternionMsgToTF(imuIn->orientation, orientation);
   tf::Matrix3x3(orientation).getRPY(roll, pitch, yaw);
 
-  float accX = imuIn->linear_acceleration.y - sin(roll) * cos(pitch) * 9.81;
-  float accY = imuIn->linear_acceleration.z - cos(roll) * cos(pitch) * 9.81;
-  float accZ = imuIn->linear_acceleration.x + sin(pitch) * 9.81;
-
   imuPointerLast = (imuPointerLast + 1) % imuQueLength;
 
   imuTime[imuPointerLast] = imuIn->header.stamp.toSec();
-  imuRoll[imuPointerLast] = roll;
-  imuPitch[imuPointerLast] = pitch;
-  imuYaw[imuPointerLast] = yaw;
-  imuAccX[imuPointerLast] = accX;
-  imuAccY[imuPointerLast] = accY;
-  imuAccZ[imuPointerLast] = accZ;
+  imuRoll[imuPointerLast] = float(roll);
+  imuPitch[imuPointerLast] = float(pitch);
+  imuYaw[imuPointerLast] = float(yaw);
+  imuAccX[imuPointerLast] = float(imuIn->linear_acceleration.y - sin(roll) * cos(pitch) * 9.81);
+  imuAccY[imuPointerLast] = float(imuIn->linear_acceleration.z - cos(roll) * cos(pitch) * 9.81);
+  imuAccZ[imuPointerLast] = float(imuIn->linear_acceleration.x + sin(pitch) * 9.81);;
 
   AccumulateIMUShift();
 }
 
+
+
+/**
+ * The main function.
+ *
+ * @param argc
+ * @param argv
+ * @return
+ */
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "scanRegistration");
