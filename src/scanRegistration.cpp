@@ -471,36 +471,22 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     for (size_t ringIdx = CURVATURE_REGION; ringIdx < ringSize - CURVATURE_REGION - 1; ringIdx++) {
       size_t pi = ringStartIdx + ringIdx;
 
-      float diffX = laserCloud->points[pi + 1].x - laserCloud->points[pi].x;
-      float diffY = laserCloud->points[pi + 1].y - laserCloud->points[pi].y;
-      float diffZ = laserCloud->points[pi + 1].z - laserCloud->points[pi].z;
-      float diff = diffX * diffX + diffY * diffY + diffZ * diffZ;
+      float fwdDiff = calcSquaredDiff(laserCloud->points[pi + 1], laserCloud->points[pi]);
 
-      if (diff > 0.1) {
-        float depth1 = sqrt(laserCloud->points[pi].x * laserCloud->points[pi].x +
-                            laserCloud->points[pi].y * laserCloud->points[pi].y +
-                            laserCloud->points[pi].z * laserCloud->points[pi].z);
+      if (fwdDiff > 0.1) {
+        float dist1 = calcPointDistance(laserCloud->points[pi]);
+        float dist2 = calcPointDistance(laserCloud->points[pi + 1]);
 
-        float depth2 = sqrt(laserCloud->points[pi + 1].x * laserCloud->points[pi + 1].x +
-                            laserCloud->points[pi + 1].y * laserCloud->points[pi + 1].y +
-                            laserCloud->points[pi + 1].z * laserCloud->points[pi + 1].z);
-
-        if (depth1 > depth2) {
-          diffX = laserCloud->points[pi + 1].x - laserCloud->points[pi].x * depth2 / depth1;
-          diffY = laserCloud->points[pi + 1].y - laserCloud->points[pi].y * depth2 / depth1;
-          diffZ = laserCloud->points[pi + 1].z - laserCloud->points[pi].z * depth2 / depth1;
-
-          if (sqrt(diffX * diffX + diffY * diffY + diffZ * diffZ) / depth2 < 0.1) {
+        if (dist1 > dist2) {
+          if (sqrt(calcSquaredDiff(laserCloud->points[pi + 1], laserCloud->points[pi], dist2 / dist1)) / dist2 < 0.1) {
             for (size_t i = 0; i <= CURVATURE_REGION; i++) {
               ringNeighborPicked[ringIdx - i] = 1;
             }
+
+            continue;
           }
         } else {
-          diffX = laserCloud->points[pi + 1].x * depth1 / depth2 - laserCloud->points[pi].x;
-          diffY = laserCloud->points[pi + 1].y * depth1 / depth2 - laserCloud->points[pi].y;
-          diffZ = laserCloud->points[pi + 1].z * depth1 / depth2 - laserCloud->points[pi].z;
-
-          if (sqrt(diffX * diffX + diffY * diffY + diffZ * diffZ) / depth1 < 0.1) {
+          if (sqrt(calcSquaredDiff(laserCloud->points[pi + 1], dist1 / dist2, laserCloud->points[pi])) / dist1 < 0.1) {
             for (size_t i = CURVATURE_REGION + 1; i > 0; i--) {
               ringNeighborPicked[ringIdx + i] = 1;
             }
@@ -508,16 +494,10 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
         }
       }
 
-      float diffX2 = laserCloud->points[pi].x - laserCloud->points[pi - 1].x;
-      float diffY2 = laserCloud->points[pi].y - laserCloud->points[pi - 1].y;
-      float diffZ2 = laserCloud->points[pi].z - laserCloud->points[pi - 1].z;
-      float diff2 = diffX2 * diffX2 + diffY2 * diffY2 + diffZ2 * diffZ2;
+      float backDiff = calcSquaredDiff(laserCloud->points[pi], laserCloud->points[pi - 1]);
+      float distSqare = calcSquaredPointDistance(laserCloud->points[pi]);
 
-      float dis = laserCloud->points[pi].x * laserCloud->points[pi].x
-                + laserCloud->points[pi].y * laserCloud->points[pi].y
-                + laserCloud->points[pi].z * laserCloud->points[pi].z;
-
-      if (diff > 0.0002 * dis && diff2 > 0.0002 * dis) {
+      if (fwdDiff > 0.0002 * distSqare && backDiff > 0.0002 * distSqare) {
         ringNeighborPicked[ringIdx] = 1;
       }
     }
@@ -536,7 +516,9 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
       size_t regionSize = regionEndIdx - regionStartIdx;
 
       // skip empty regions
-      if (regionEndIdx <= regionStartIdx) { continue; }
+      if (regionEndIdx <= regionStartIdx) {
+        continue;
+      }
 
       // resize region buffers
       regionCurvatures.resize(regionSize);
@@ -544,7 +526,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
       regionLabels.assign(regionSize, 0);
 
 
-      // calculate point curvatures and reset associated point information
+      // calculate point curvatures and reset sorting indices
       for (size_t i = regionStartIdx, regionIdx = 0; i < regionEndIdx; i++, regionIdx++) {
         float diffX = -2 * CURVATURE_REGION * laserCloud->points[i].x;
         float diffY = -2 * CURVATURE_REGION * laserCloud->points[i].y;
@@ -596,26 +578,14 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
 
           ringNeighborPicked[ringIdx] = 1;
           for (size_t j = 1; j <= CURVATURE_REGION; j++) {
-            float diffX = laserCloud->points[idx + j].x
-                        - laserCloud->points[idx + j - 1].x;
-            float diffY = laserCloud->points[idx + j].y
-                        - laserCloud->points[idx + j - 1].y;
-            float diffZ = laserCloud->points[idx + j].z
-                        - laserCloud->points[idx + j - 1].z;
-            if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05) {
+            if (calcSquaredDiff(laserCloud->points[idx + j], laserCloud->points[idx + j - 1]) > 0.05) {
               break;
             }
 
             ringNeighborPicked[ringIdx + j] = 1;
           }
           for (size_t j = 1; j <= CURVATURE_REGION; j++) {
-            float diffX = laserCloud->points[idx - j].x
-                        - laserCloud->points[idx - j + 1].x;
-            float diffY = laserCloud->points[idx - j].y
-                        - laserCloud->points[idx - j + 1].y;
-            float diffZ = laserCloud->points[idx - j].z
-                        - laserCloud->points[idx - j + 1].z;
-            if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05) {
+            if (calcSquaredDiff(laserCloud->points[idx - j], laserCloud->points[idx - j + 1]) > 0.05) {
               break;
             }
 
@@ -646,26 +616,14 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
 
           ringNeighborPicked[ringIdx] = 1;
           for (size_t j = 1; j <= CURVATURE_REGION; j++) {
-            float diffX = laserCloud->points[idx + j].x
-                        - laserCloud->points[idx + j - 1].x;
-            float diffY = laserCloud->points[idx + j].y
-                        - laserCloud->points[idx + j - 1].y;
-            float diffZ = laserCloud->points[idx + j].z
-                        - laserCloud->points[idx + j - 1].z;
-            if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05) {
+            if (calcSquaredDiff(laserCloud->points[idx + j], laserCloud->points[idx + j - 1]) > 0.05) {
               break;
             }
 
             ringNeighborPicked[ringIdx + j] = 1;
           }
           for (size_t j = 1; j <= CURVATURE_REGION; j++) {
-            float diffX = laserCloud->points[idx - j].x
-                        - laserCloud->points[idx - j + 1].x;
-            float diffY = laserCloud->points[idx - j].y
-                        - laserCloud->points[idx - j + 1].y;
-            float diffZ = laserCloud->points[idx - j].z
-                        - laserCloud->points[idx - j + 1].z;
-            if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05) {
+            if (calcSquaredDiff(laserCloud->points[idx - j], laserCloud->points[idx - j + 1]) > 0.05) {
               break;
             }
 
