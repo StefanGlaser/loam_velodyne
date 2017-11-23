@@ -57,7 +57,7 @@ using std::fabs;
 using std::pow;
 
 
-const float scanPeriod = 0.1;
+const float SCAN_PERIOD = 0.1;
 const int stackFrameNum = 1;
 const int mapFrameNum = 5;
 
@@ -216,20 +216,20 @@ void transformUpdate()
   if (imuPointerLast >= 0) {
     float imuRollLast = 0, imuPitchLast = 0;
     while (imuPointerFront != imuPointerLast) {
-      if (timeLaserOdometry + scanPeriod < imuTime[imuPointerFront]) {
+      if (timeLaserOdometry + SCAN_PERIOD < imuTime[imuPointerFront]) {
         break;
       }
       imuPointerFront = (imuPointerFront + 1) % imuQueLength;
     }
 
-    if (timeLaserOdometry + scanPeriod > imuTime[imuPointerFront]) {
+    if (timeLaserOdometry + SCAN_PERIOD > imuTime[imuPointerFront]) {
       imuRollLast = imuRoll[imuPointerFront];
       imuPitchLast = imuPitch[imuPointerFront];
     } else {
       int imuPointerBack = (imuPointerFront + imuQueLength - 1) % imuQueLength;
-      float ratioFront = float((timeLaserOdometry + scanPeriod - imuTime[imuPointerBack])
+      float ratioFront = float((timeLaserOdometry + SCAN_PERIOD - imuTime[imuPointerBack])
                        / (imuTime[imuPointerFront] - imuTime[imuPointerBack]));
-      float ratioBack = float((imuTime[imuPointerFront] - timeLaserOdometry - scanPeriod)
+      float ratioBack = float((imuTime[imuPointerFront] - timeLaserOdometry - SCAN_PERIOD)
                       / (imuTime[imuPointerFront] - imuTime[imuPointerBack]));
 
       imuRollLast = imuRoll[imuPointerFront] * ratioFront + imuRoll[imuPointerBack] * ratioBack;

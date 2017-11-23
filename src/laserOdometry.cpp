@@ -56,7 +56,7 @@ using std::sqrt;
 using std::fabs;
 using std::pow;
 
-const float scanPeriod = 0.1;
+const float SCAN_PERIOD = 0.1;
 
 const int skipFrameNum = 1;
 bool systemInited = false;
@@ -499,9 +499,9 @@ int main(int argc, char** argv)
         continue;
       }
 
-      transform[3] -= imuVeloFromStartX * scanPeriod;
-      transform[4] -= imuVeloFromStartY * scanPeriod;
-      transform[5] -= imuVeloFromStartZ * scanPeriod;
+      transform[3] -= imuVeloFromStartX * SCAN_PERIOD;
+      transform[4] -= imuVeloFromStartY * SCAN_PERIOD;
+      transform[5] -= imuVeloFromStartZ * SCAN_PERIOD;
 
       if (laserCloudCornerLastNum > 10 && laserCloudSurfLastNum > 100) {
         std::vector<int> indices;

@@ -68,11 +68,18 @@ using std::sqrt;
 } CloudLabel;*/
 
 
-const float scanPeriod = 0.1;
+const float SCAN_PERIOD = 0.1;
 
-const int systemDelay = 20;
-int systemInitCount = 0;
-bool systemInited = false;
+/**
+ * The number of cloud messages that should be skipped after initial startup.
+ *
+ * Skipping the first couple of messages allows the internal IMU buffers to fill up with actual data (I guess).
+ */
+const int SYSTEM_INIT_DELAY = 20;
+
+/** Counter holding the number of remaining cloud messages to skip after initial startup. */
+int systemInitCount = SYSTEM_INIT_DELAY;
+
 
 /**
  * The number of scan rings of the Velodyne lidar.
@@ -89,6 +96,7 @@ size_t N_FEATURE_REGIONS = 6;
 /** The number of surrounding points (+/- region around a point) used to calculate a point curvature. */
 size_t CURVATURE_REGION_SIZE = 5;
 
+
 /**
  * The point curvatures.
  *
@@ -96,7 +104,7 @@ size_t CURVATURE_REGION_SIZE = 5;
  * The higher the curvature value, the higher the curvature / the sharper the corner.
  */
 float cloudCurvature[40000];
-int cloudSortInd[40000];
+size_t cloudSortInd[40000];
 int cloudNeighborPicked[40000];
 int cloudLabel[40000];
 
@@ -237,7 +245,7 @@ void AccumulateIMUShift()
 
   int imuPointerBack = (imuPointerLast + imuQueLength - 1) % imuQueLength;
   double timeDiff = imuTime[imuPointerLast] - imuTime[imuPointerBack];
-  if (timeDiff < scanPeriod) {
+  if (timeDiff < SCAN_PERIOD) {
 
     imuShiftX[imuPointerLast] = float(imuShiftX[imuPointerBack] + imuVeloX[imuPointerBack] * timeDiff
                               + accX * timeDiff * timeDiff / 2);
@@ -270,33 +278,35 @@ void AccumulateIMUShift()
  */
 void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
 {
-  if (!systemInited) {
-    systemInitCount++;
-    if (systemInitCount >= systemDelay) {
-      systemInited = true;
-    }
+  // check system state
+  if (systemInitCount > 0) {
+    // not initialized yet
+    systemInitCount--;
+
     return;
+  } else if (systemInitCount == 0) {
+    // initialize system
   }
 
-  std::vector<int> scanStartInd(N_SCAN_RINGS, 0);
-  std::vector<int> scanEndInd(N_SCAN_RINGS, 0);
+  std::vector<size_t> scanStartInd(N_SCAN_RINGS, 0);
+  std::vector<size_t> scanEndInd(N_SCAN_RINGS, 0);
 
   double timeScanCur = laserCloudMsg->header.stamp.toSec();
   pcl::PointCloud<velodyne_pointcloud::PointXYZIR> laserCloudIn;
-
   pcl::fromROSMsg(*laserCloudMsg, laserCloudIn);
-  int cloudSize = laserCloudIn.points.size();
+  size_t cloudSize = laserCloudIn.points.size();
+
   float startOri = -atan2(laserCloudIn.points[0].y, laserCloudIn.points[0].x);
   float endOri = float(-atan2(laserCloudIn.points[cloudSize - 1].y,
                         laserCloudIn.points[cloudSize - 1].x) + 2 * M_PI);
-
   if (endOri - startOri > 3 * M_PI) {
     endOri -= 2 * M_PI;
   } else if (endOri - startOri < M_PI) {
     endOri += 2 * M_PI;
   }
+
   bool halfPassed = false;
-  int count = cloudSize;
+  size_t count = cloudSize;
   PointType point;
   std::vector<pcl::PointCloud<PointType> > laserCloudScans(N_SCAN_RINGS);
 
@@ -306,7 +316,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
   // -- Extract:  Discard NaN and zero valued points.
   // -- Sort:     Sort new points based on their ring number.
   // -- Register: Use IMU information (if available) to register points in the local system.
-  for (int i = 0; i < cloudSize; i++) {
+  for (size_t i = 0; i < cloudSize; i++) {
     point.x = laserCloudIn.points[i].y;
     point.y = laserCloudIn.points[i].z;
     point.z = laserCloudIn.points[i].x;
@@ -357,11 +367,11 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     }
 
     float relTime = (ori - startOri) / (endOri - startOri);
-    point.intensity = ringID + scanPeriod * relTime;
+    point.intensity = ringID + SCAN_PERIOD * relTime;
 
     // register new points into local system using the IMU
     if (imuPointerLast >= 0) {
-      float pointTime = relTime * scanPeriod;
+      float pointTime = relTime * SCAN_PERIOD;
       while (imuPointerFront != imuPointerLast) {
         if (timeScanCur + pointTime < imuTime[imuPointerFront]) {
           break;
@@ -437,42 +447,43 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
   // --------------------------------------------------------------------------
   // Step 1.2: Construct sorted, full resolution point cloud and calculate point curvatures
   pcl::PointCloud<PointType>::Ptr laserCloud(new pcl::PointCloud<PointType>());
-  for (int i = 0, cloudIdx = 0; i < N_SCAN_RINGS; i++) {
+
+  for (size_t ringID = 0, cloudIdx = 0; ringID < N_SCAN_RINGS; ringID++) {
     // append scan ring cloud to sorted cloud
-    *laserCloud += laserCloudScans[i];
+    *laserCloud += laserCloudScans[ringID];
 
-    // calculate scan ring start and end indices
+    // calculate start and end indices of scan ring
     // (shrink actual region by the number of neighbors used to calculate the point curvature)
-    int ringStartIdx = cloudIdx + CURVATURE_REGION_SIZE;
-    cloudIdx += laserCloudScans[i].points.size();
-    int ringEndIdx = cloudIdx - CURVATURE_REGION_SIZE;
+    size_t ringStartIdx = cloudIdx + CURVATURE_REGION_SIZE;
+    cloudIdx += laserCloudScans[ringID].points.size();
+    size_t ringEndIdx = cloudIdx - CURVATURE_REGION_SIZE;
 
-    scanStartInd[i] = ringStartIdx;
-    scanEndInd[i] = ringEndIdx;
+    scanStartInd[ringID] = ringStartIdx;
+    scanEndInd[ringID] = ringEndIdx;
 
-    // calculate point curvatures
-    for (int j = ringStartIdx; j < ringEndIdx; j++) {
-      float diffX = -2 * CURVATURE_REGION_SIZE * laserCloud->points[j].x;
-      float diffY = -2 * CURVATURE_REGION_SIZE * laserCloud->points[j].y;
-      float diffZ = -2 * CURVATURE_REGION_SIZE * laserCloud->points[j].z;
+    // calculate point curvatures and reset associated point information
+    for (size_t i = ringStartIdx; i < ringEndIdx; i++) {
+      float diffX = -2 * CURVATURE_REGION_SIZE * laserCloud->points[i].x;
+      float diffY = -2 * CURVATURE_REGION_SIZE * laserCloud->points[i].y;
+      float diffZ = -2 * CURVATURE_REGION_SIZE * laserCloud->points[i].z;
 
-      for (int k = 1; k <= CURVATURE_REGION_SIZE; k++) {
-        diffX += laserCloud->points[j - k].x + laserCloud->points[j + k].x;
-        diffY += laserCloud->points[j - k].y + laserCloud->points[j + k].y;
-        diffZ += laserCloud->points[j - k].z + laserCloud->points[j + k].z;
+      for (size_t j = 1; j <= CURVATURE_REGION_SIZE; j++) {
+        diffX += laserCloud->points[i - j].x + laserCloud->points[i + j].x;
+        diffY += laserCloud->points[i - j].y + laserCloud->points[i + j].y;
+        diffZ += laserCloud->points[i - j].z + laserCloud->points[i + j].z;
       }
 
-      cloudCurvature[j] = diffX * diffX + diffY * diffY + diffZ * diffZ;
-      cloudSortInd[j] = j;
-      cloudNeighborPicked[j] = 0;
-      cloudLabel[j] = 0;
+      cloudCurvature[i] = diffX * diffX + diffY * diffY + diffZ * diffZ;
+      cloudSortInd[i] = i;
+      cloudNeighborPicked[i] = 0;
+      cloudLabel[i] = 0;
     }
   }
 
 
   // --------------------------------------------------------------------------
   // Step 1.3: Mark unreliable points as picked
-  for (int i = 5; i < cloudSize - 6; i++) {
+  for (size_t i = 5; i < cloudSize - 6; i++) {
     float diffX = laserCloud->points[i + 1].x - laserCloud->points[i].x;
     float diffY = laserCloud->points[i + 1].y - laserCloud->points[i].y;
     float diffZ = laserCloud->points[i + 1].z - laserCloud->points[i].z;
@@ -547,14 +558,14 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     // Each region can provide at most 2 sharp corners and 20 less sharp corners,
     // as well as at most 4 flat surface points.
     for (int j = 0; j < N_FEATURE_REGIONS; j++) {
-      int sp = (scanStartInd[i] * (N_FEATURE_REGIONS - j)  + scanEndInd[i] * j) / N_FEATURE_REGIONS;
-      int ep = (scanStartInd[i] * (N_FEATURE_REGIONS - 1 - j)  + scanEndInd[i] * (j + 1)) / N_FEATURE_REGIONS - 1;
+      size_t sp = (scanStartInd[i] * (N_FEATURE_REGIONS - j)  + scanEndInd[i] * j) / N_FEATURE_REGIONS;
+      size_t ep = (scanStartInd[i] * (N_FEATURE_REGIONS - 1 - j)  + scanEndInd[i] * (j + 1)) / N_FEATURE_REGIONS - 1;
 
       // sort features from low to high curvature
-      for (int k = sp + 1; k <= ep; k++) {
-        for (int l = k; l >= sp + 1; l--) {
+      for (size_t k = sp + 1; k <= ep; k++) {
+        for (size_t l = k; l >= sp + 1; l--) {
           if (cloudCurvature[cloudSortInd[l]] < cloudCurvature[cloudSortInd[l - 1]]) {
-            int temp = cloudSortInd[l - 1];
+            size_t temp = cloudSortInd[l - 1];
             cloudSortInd[l - 1] = cloudSortInd[l];
             cloudSortInd[l] = temp;
           }
@@ -563,107 +574,109 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
 
       // extract corner points
       int largestPickedNum = 0;
-      for (int k = ep; k >= sp; k--) {
-        int ind = cloudSortInd[k];
-        if (cloudNeighborPicked[ind] == 0 &&
-            cloudCurvature[ind] > 0.1) {
+      for (size_t k = ep; k >= sp; k--) {
+        size_t idx = cloudSortInd[k];
+
+        if (cloudNeighborPicked[idx] == 0 &&
+            cloudCurvature[idx] > 0.1) {
         
           largestPickedNum++;
           if (largestPickedNum <= 2) {
-            cloudLabel[ind] = 2;
-            cornerPointsSharp.push_back(laserCloud->points[ind]);
-            cornerPointsLessSharp.push_back(laserCloud->points[ind]);
+            cloudLabel[idx] = 2;
+            cornerPointsSharp.push_back(laserCloud->points[idx]);
+            cornerPointsLessSharp.push_back(laserCloud->points[idx]);
           } else if (largestPickedNum <= 20) {
-            cloudLabel[ind] = 1;
-            cornerPointsLessSharp.push_back(laserCloud->points[ind]);
+            cloudLabel[idx] = 1;
+            cornerPointsLessSharp.push_back(laserCloud->points[idx]);
           } else {
             break;
           }
 
-          cloudNeighborPicked[ind] = 1;
-          for (int l = 1; l <= CURVATURE_REGION_SIZE; l++) {
-            float diffX = laserCloud->points[ind + l].x 
-                        - laserCloud->points[ind + l - 1].x;
-            float diffY = laserCloud->points[ind + l].y 
-                        - laserCloud->points[ind + l - 1].y;
-            float diffZ = laserCloud->points[ind + l].z 
-                        - laserCloud->points[ind + l - 1].z;
+          cloudNeighborPicked[idx] = 1;
+          for (size_t l = 1; l <= CURVATURE_REGION_SIZE; l++) {
+            float diffX = laserCloud->points[idx + l].x
+                        - laserCloud->points[idx + l - 1].x;
+            float diffY = laserCloud->points[idx + l].y
+                        - laserCloud->points[idx + l - 1].y;
+            float diffZ = laserCloud->points[idx + l].z
+                        - laserCloud->points[idx + l - 1].z;
             if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05) {
               break;
             }
 
-            cloudNeighborPicked[ind + l] = 1;
+            cloudNeighborPicked[idx + l] = 1;
           }
-          for (int l = -1; l >= -CURVATURE_REGION_SIZE; l--) {
-            float diffX = laserCloud->points[ind + l].x 
-                        - laserCloud->points[ind + l + 1].x;
-            float diffY = laserCloud->points[ind + l].y 
-                        - laserCloud->points[ind + l + 1].y;
-            float diffZ = laserCloud->points[ind + l].z 
-                        - laserCloud->points[ind + l + 1].z;
+          for (size_t l = 1; l <= CURVATURE_REGION_SIZE; l++) {
+            float diffX = laserCloud->points[idx - l].x
+                        - laserCloud->points[idx - l + 1].x;
+            float diffY = laserCloud->points[idx - l].y
+                        - laserCloud->points[idx - l + 1].y;
+            float diffZ = laserCloud->points[idx - l].z
+                        - laserCloud->points[idx - l + 1].z;
             if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05) {
               break;
             }
 
-            cloudNeighborPicked[ind + l] = 1;
+            cloudNeighborPicked[idx - l] = 1;
           }
         }
       }
 
       // extract flat surface points
       int smallestPickedNum = 0;
-      for (int k = sp; k <= ep; k++) {
-        int ind = cloudSortInd[k];
-        if (cloudNeighborPicked[ind] == 0 &&
-            cloudCurvature[ind] < 0.1) {
+      for (size_t k = sp; k <= ep; k++) {
+        size_t idx = cloudSortInd[k];
 
-          cloudLabel[ind] = -1;
-          surfPointsFlat.push_back(laserCloud->points[ind]);
+        if (cloudNeighborPicked[idx] == 0 &&
+            cloudCurvature[idx] < 0.1) {
+
+          cloudLabel[idx] = -1;
+          surfPointsFlat.push_back(laserCloud->points[idx]);
 
           smallestPickedNum++;
           if (smallestPickedNum >= 4) {
             break;
           }
 
-          cloudNeighborPicked[ind] = 1;
-          for (int l = 1; l <= CURVATURE_REGION_SIZE; l++) {
-            float diffX = laserCloud->points[ind + l].x 
-                        - laserCloud->points[ind + l - 1].x;
-            float diffY = laserCloud->points[ind + l].y 
-                        - laserCloud->points[ind + l - 1].y;
-            float diffZ = laserCloud->points[ind + l].z 
-                        - laserCloud->points[ind + l - 1].z;
+          cloudNeighborPicked[idx] = 1;
+          for (size_t l = 1; l <= CURVATURE_REGION_SIZE; l++) {
+            float diffX = laserCloud->points[idx + l].x
+                        - laserCloud->points[idx + l - 1].x;
+            float diffY = laserCloud->points[idx + l].y
+                        - laserCloud->points[idx + l - 1].y;
+            float diffZ = laserCloud->points[idx + l].z
+                        - laserCloud->points[idx + l - 1].z;
             if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05) {
               break;
             }
 
-            cloudNeighborPicked[ind + l] = 1;
+            cloudNeighborPicked[idx + l] = 1;
           }
-          for (int l = -1; l >= -CURVATURE_REGION_SIZE; l--) {
-            float diffX = laserCloud->points[ind + l].x 
-                        - laserCloud->points[ind + l + 1].x;
-            float diffY = laserCloud->points[ind + l].y 
-                        - laserCloud->points[ind + l + 1].y;
-            float diffZ = laserCloud->points[ind + l].z 
-                        - laserCloud->points[ind + l + 1].z;
+          for (size_t l = 1; l <= CURVATURE_REGION_SIZE; l++) {
+            float diffX = laserCloud->points[idx - l].x
+                        - laserCloud->points[idx - l + 1].x;
+            float diffY = laserCloud->points[idx - l].y
+                        - laserCloud->points[idx - l + 1].y;
+            float diffZ = laserCloud->points[idx - l].z
+                        - laserCloud->points[idx - l + 1].z;
             if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05) {
               break;
             }
 
-            cloudNeighborPicked[ind + l] = 1;
+            cloudNeighborPicked[idx - l] = 1;
           }
         }
       }
 
       // extract less flat surface points
-      for (int k = sp; k <= ep; k++) {
+      for (size_t k = sp; k <= ep; k++) {
         if (cloudLabel[k] <= 0) {
           surfPointsLessFlatScan->push_back(laserCloud->points[k]);
         }
       }
     }
 
-    // downsize less flat surface points
+    // downsize and store less flat surface points
     pcl::PointCloud<PointType> surfPointsLessFlatScanDS;
     pcl::VoxelGrid<PointType> downSizeFilter;
     downSizeFilter.setInputCloud(surfPointsLessFlatScan);
