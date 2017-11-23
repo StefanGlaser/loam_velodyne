@@ -72,16 +72,6 @@ const int SYSTEM_INIT_DELAY = 20;
 int systemInitCount = SYSTEM_INIT_DELAY;
 
 
-/**
- * The number of scan rings of the Velodyne lidar.
- *
- * VLP-16  -> 16
- * VLP-32C -> 32
- * HDL-32E -> 32
- * HDL-64E -> 64
- */
-uint16_t N_SCAN_RINGS = 16;
-
 /** The number of (equally distributed) regions used to distribute the feature extraction within a scan ring. */
 size_t N_FEATURE_REGIONS = 6;
 
@@ -280,8 +270,13 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     // initialize system
   }
 
-  std::vector<size_t> ringStartIndices(N_SCAN_RINGS, 0);
-  std::vector<size_t> ringEndIndices(N_SCAN_RINGS, 0);
+  uint16_t nScanRings = 0;
+  std::vector<size_t> ringStartIndices;
+  std::vector<size_t> ringEndIndices;
+  std::vector<pcl::PointCloud<PointType> > laserCloudScans;
+  ringStartIndices.reserve(16);
+  ringEndIndices.reserve(16);
+  laserCloudScans.reserve(16);
 
   double timeScanCur = laserCloudMsg->header.stamp.toSec();
   pcl::PointCloud<velodyne_pointcloud::PointXYZIR> laserCloudIn;
@@ -299,7 +294,6 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
 
   bool halfPassed = false;
   PointType point;
-  std::vector<pcl::PointCloud<PointType> > laserCloudScans(N_SCAN_RINGS);
 
 
   // --------------------------------------------------------------------------
@@ -325,11 +319,13 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
       continue;
     }
 
-    // evaluate ring number
+    // fetch scan ring index and resize scan ring buffers if necessary
     uint16_t ringID = laserCloudIn.points[i].ring;
-    if (ringID >= N_SCAN_RINGS){
-      ROS_DEBUG("Invalid scan ring ID: %d", ringID);
-      continue;
+    if (ringID >= nScanRings){
+      nScanRings = ringID + 1;
+      ringStartIndices.resize(nScanRings, 0);
+      ringEndIndices.resize(nScanRings, 0);
+      laserCloudScans.resize(nScanRings);
     }
 
     // extract horizontal point orientation
@@ -428,13 +424,18 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
     laserCloudScans[ringID].push_back(point);
   }
 
+  if (nScanRings == 0) {
+    // Nothing to compute... input cloud is invalid or empty.
+    return;
+  }
+
 
   // --------------------------------------------------------------------------
   // Step 1.2: Construct sorted, full resolution point cloud and store ring indices
   pcl::PointCloud<PointType>::Ptr laserCloud(new pcl::PointCloud<PointType>());
 
   cloudSize = 0;
-  for (uint16_t ringID = 0; ringID < N_SCAN_RINGS; ringID++) {
+  for (uint16_t ringID = 0; ringID < nScanRings; ringID++) {
     // append scan ring cloud to sorted cloud
     *laserCloud += laserCloudScans[ringID];
 
@@ -452,7 +453,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg)
   pcl::PointCloud<PointType> surfPointsLessFlat;
 
   // iterate over each scan ring and extract feature points
-  for (uint16_t ringID = 0; ringID < N_SCAN_RINGS; ringID++) {
+  for (uint16_t ringID = 0; ringID < nScanRings; ringID++) {
     pcl::PointCloud<PointType>::Ptr surfPointsLessFlatScan(new pcl::PointCloud<PointType>);
     size_t ringStartIdx = ringStartIndices[ringID];
     size_t ringEndIdx = ringEndIndices[ringID];
