@@ -751,11 +751,25 @@ int main(int argc, char** argv)
   ros::init(argc, argv, "scanRegistration");
   ros::NodeHandle nh;
 
+
+  // fetch parameters
+  int intParam = nh.param("/scanRegistration/featureRegions", int(N_FEATURE_REGIONS));
+  N_FEATURE_REGIONS = intParam < 1 ? 1 : size_t(intParam);
+  ROS_INFO("Using  %d  feature regions per scan ring.", int(N_FEATURE_REGIONS));
+
+  intParam = nh.param("/scanRegistration/curvatureRegion", int(CURVATURE_REGION));
+  CURVATURE_REGION = intParam < 1 ? 1 : size_t(intParam);
+  ROS_INFO("Using  +/- %d  points for curvature calculation.", int(CURVATURE_REGION));
+
+
+  // register subscribers
   ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2> 
                                   ("/velodyne_points", 2, laserCloudHandler);
 
   ros::Subscriber subImu = nh.subscribe<sensor_msgs::Imu> ("/imu/data", 50, imuHandler);
 
+
+  // register publishers
   pubLaserCloud = nh.advertise<sensor_msgs::PointCloud2>
                                  ("/velodyne_cloud_2", 2);
 
@@ -772,6 +786,7 @@ int main(int argc, char** argv)
                                            ("/laser_cloud_less_flat", 2);
 
   pubImuTrans = nh.advertise<sensor_msgs::PointCloud2> ("/imu_trans", 5);
+
 
   ros::spin();
 
