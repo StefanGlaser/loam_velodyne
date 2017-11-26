@@ -34,13 +34,8 @@
 #include <cmath>
 #include <vector>
 
-#include <loam_velodyne/common.h>
-#include <opencv/cv.h>
 #include <nav_msgs/Odometry.h>
-#include <opencv/cv.h>
 #include <pcl_conversions/pcl_conversions.h>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <ros/ros.h>
@@ -50,6 +45,7 @@
 #include <tf/transform_broadcaster.h>
 #include <velodyne_pointcloud/point_types.h> 
 #include <velodyne_pointcloud/rawdata.h>
+#include "loam_velodyne/common.h"
 #include "math_utils.h"
 
 using std::sin;
@@ -182,8 +178,8 @@ void AccumulateIMUShift()
   double timeDiff = imuTime[imuPointerLast] - imuTime[imuPointerBack];
 
   if (timeDiff < SCAN_PERIOD) {
-    imuShift[imuPointerLast] = imuShift[imuPointerBack] + imuVelo[imuPointerBack] * timeDiff
-                              + acc * timeDiff * timeDiff / 2;
+    imuShift[imuPointerLast] = imuShift[imuPointerBack] + (imuVelo[imuPointerBack] * timeDiff)
+                              + acc * (0.5* timeDiff * timeDiff);
 
     imuVelo[imuPointerLast] = imuVelo[imuPointerBack] + acc * timeDiff;
   }

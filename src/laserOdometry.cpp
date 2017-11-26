@@ -35,17 +35,18 @@
 
 #include <loam_velodyne/common.h>
 #include <nav_msgs/Odometry.h>
-#include <opencv/cv.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
-#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
+#include <Eigen/Eigenvalues>
+#include <Eigen/QR>
+#include "loam_velodyne/nanoflann_pcl.h"
 #include "math_utils.h"
 
 
@@ -86,8 +87,9 @@ pcl::PointCloud<PointType>::Ptr laserCloudOri(new pcl::PointCloud<PointType>());
 pcl::PointCloud<PointType>::Ptr coeffSel(new pcl::PointCloud<PointType>());
 pcl::PointCloud<PointType>::Ptr laserCloudFullRes(new pcl::PointCloud<PointType>());
 pcl::PointCloud<pcl::PointXYZ>::Ptr imuTrans(new pcl::PointCloud<pcl::PointXYZ>());
-pcl::KdTreeFLANN<PointType>::Ptr kdtreeCornerLast(new pcl::KdTreeFLANN<PointType>());
-pcl::KdTreeFLANN<PointType>::Ptr kdtreeSurfLast(new pcl::KdTreeFLANN<PointType>());
+
+nanoflann::KdTreeFLANN<PointType> kdtreeCornerLast;
+nanoflann::KdTreeFLANN<PointType> kdtreeSurfLast;
 
 size_t laserCloudCornerLastNum;
 size_t laserCloudSurfLastNum;
@@ -399,13 +401,10 @@ int main(int argc, char** argv)
   laserOdometryTrans.frame_id_ = "/camera_init";
   laserOdometryTrans.child_frame_id_ = "/laser_odom";
 
-  std::vector<int> pointSearchInd;
-  std::vector<float> pointSearchSqDis;
-
   PointType pointOri, pointSel, tripod1, tripod2, tripod3, pointProj, coeff;
 
   bool isDegenerate = false;
-  cv::Mat matP(6, 6, CV_32F, cv::Scalar::all(0));
+  Eigen::Matrix<float,6,6> matP;
 
   int frameCount = skipFrameNum;
   ros::Rate rate(100);
@@ -440,9 +439,6 @@ int main(int argc, char** argv)
         surfPointsLessFlat = laserCloudSurfLast;
         laserCloudSurfLast = laserCloudTemp;
 
-        kdtreeCornerLast->setInputCloud(laserCloudCornerLast);
-        kdtreeSurfLast->setInputCloud(laserCloudSurfLast);
-
         sensor_msgs::PointCloud2 laserCloudCornerLast2;
         pcl::toROSMsg(*laserCloudCornerLast, laserCloudCornerLast2);
         laserCloudCornerLast2.header.stamp = ros::Time().fromSec(timeSurfPointsLessFlat);
@@ -458,6 +454,9 @@ int main(int argc, char** argv)
         transformSum.rot_x += imuPitchStart;
         transformSum.rot_z += imuRollStart;
 
+        kdtreeCornerLast.setInputCloud(laserCloudCornerLast);
+        kdtreeSurfLast.setInputCloud(laserCloudSurfLast);
+
         systemInited = true;
         continue;
       }
@@ -465,7 +464,11 @@ int main(int argc, char** argv)
       transform.pos -= imuVeloFromStart * SCAN_PERIOD;
 
       if (laserCloudCornerLastNum > 10 && laserCloudSurfLastNum > 100) {
+
+        std::vector<int> pointSearchInd(1);
+        std::vector<float> pointSearchSqDis(1);
         std::vector<int> indices;
+
         pcl::removeNaNFromPointCloud(*cornerPointsSharp,*cornerPointsSharp, indices);
         size_t cornerPointsSharpNum = cornerPointsSharp->points.size();
         size_t surfPointsFlatNum = surfPointsFlat->points.size();
@@ -479,7 +482,8 @@ int main(int argc, char** argv)
 
             if (iterCount % 5 == 0) {
               pcl::removeNaNFromPointCloud(*laserCloudCornerLast,*laserCloudCornerLast, indices);
-              kdtreeCornerLast->nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
+              kdtreeCornerLast.nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
+
               int closestPointInd = -1, minPointInd2 = -1;
               if (pointSearchSqDis[0] < 25) {
                 closestPointInd = pointSearchInd[0];
@@ -590,7 +594,7 @@ int main(int argc, char** argv)
             transformToStart(&surfPointsFlat->points[i], &pointSel);
 
             if (iterCount % 5 == 0) {
-              kdtreeSurfLast->nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
+              kdtreeSurfLast.nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
               int closestPointInd = -1, minPointInd2 = -1, minPointInd3 = -1;
               if (pointSearchSqDis[0] < 25) {
                 closestPointInd = pointSearchInd[0];
@@ -701,12 +705,13 @@ int main(int argc, char** argv)
             continue;
           }
 
-          cv::Mat matA(pointSelNum, 6, CV_32F, cv::Scalar::all(0));
-          cv::Mat matAt(6, pointSelNum, CV_32F, cv::Scalar::all(0));
-          cv::Mat matAtA(6, 6, CV_32F, cv::Scalar::all(0));
-          cv::Mat matB(pointSelNum, 1, CV_32F, cv::Scalar::all(0));
-          cv::Mat matAtB(6, 1, CV_32F, cv::Scalar::all(0));
-          cv::Mat matX(6, 1, CV_32F, cv::Scalar::all(0));
+          Eigen::Matrix<float,Eigen::Dynamic,6> matA(pointSelNum, 6);
+          Eigen::Matrix<float,6,Eigen::Dynamic> matAt(6,pointSelNum);
+          Eigen::Matrix<float,6,6> matAtA;
+          Eigen::VectorXf matB(pointSelNum);
+          Eigen::Matrix<float,6,1> matAtB;
+          Eigen::Matrix<float,6,1> matX;
+
           for (int i = 0; i < pointSelNum; i++) {
             pointOri = laserCloudOri->points[i];
             coeff = coeffSel->points[i];
@@ -756,54 +761,58 @@ int main(int argc, char** argv)
 
             float d2 = coeff.intensity;
 
-            matA.at<float>(i, 0) = arx;
-            matA.at<float>(i, 1) = ary;
-            matA.at<float>(i, 2) = arz;
-            matA.at<float>(i, 3) = atx;
-            matA.at<float>(i, 4) = aty;
-            matA.at<float>(i, 5) = atz;
-            matB.at<float>(i, 0) = -0.05f * d2;
+            matA(i, 0) = arx;
+            matA(i, 1) = ary;
+            matA(i, 2) = arz;
+            matA(i, 3) = atx;
+            matA(i, 4) = aty;
+            matA(i, 5) = atz;
+            matB(i, 0) = -0.05 * d2;
           }
-          cv::transpose(matA, matAt);
+          matAt = matA.transpose();
           matAtA = matAt * matA;
           matAtB = matAt * matB;
-          cv::solve(matAtA, matAtB, matX, cv::DECOMP_QR);
+
+          matX = matAtA.colPivHouseholderQr().solve(matAtB);
 
           if (iterCount == 0) {
-            cv::Mat matE(1, 6, CV_32F, cv::Scalar::all(0));
-            cv::Mat matV(6, 6, CV_32F, cv::Scalar::all(0));
-            cv::Mat matV2(6, 6, CV_32F, cv::Scalar::all(0));
+            Eigen::Matrix<float,1,6> matE;
+            Eigen::Matrix<float,6,6> matV;
+            Eigen::Matrix<float,6,6> matV2;
 
-            cv::eigen(matAtA, matE, matV);
-            matV.copyTo(matV2);
+            Eigen::SelfAdjointEigenSolver< Eigen::Matrix<float,6, 6> > esolver(matAtA);
+            matE = esolver.eigenvalues().real();
+            matV = esolver.eigenvectors().real();
+
+            matV2 = matV;
 
             isDegenerate = false;
             float eignThre[6] = {10, 10, 10, 10, 10, 10};
             for (int i = 5; i >= 0; i--) {
-              if (matE.at<float>(0, i) < eignThre[i]) {
+              if (matE(0, i) < eignThre[i]) {
                 for (int j = 0; j < 6; j++) {
-                  matV2.at<float>(i, j) = 0;
+                  matV2(i, j) = 0;
                 }
                 isDegenerate = true;
               } else {
                 break;
               }
             }
-            matP = matV.inv() * matV2;
+            matP = matV.inverse() * matV2;
           }
 
           if (isDegenerate) {
-            cv::Mat matX2(6, 1, CV_32F, cv::Scalar::all(0));
-            matX.copyTo(matX2);
+            Eigen::Matrix<float,6,1> matX2;
+            matX2 = matX;
             matX = matP * matX2;
           }
 
-          transform.rot_x = transform.rot_x.value() + matX.at<float>(0, 0);
-          transform.rot_y = transform.rot_y.value() + matX.at<float>(1, 0);
-          transform.rot_z = transform.rot_z.value() + matX.at<float>(2, 0);
-          transform.pos.x() += matX.at<float>(3, 0);
-          transform.pos.y() += matX.at<float>(4, 0);
-          transform.pos.z() += matX.at<float>(5, 0);
+          transform.rot_x = transform.rot_x.value() + matX(0, 0);
+          transform.rot_y = transform.rot_y.value() + matX(1, 0);
+          transform.rot_z = transform.rot_z.value() + matX(2, 0);
+          transform.pos.x() += matX(3, 0);
+          transform.pos.y() += matX(4, 0);
+          transform.pos.z() += matX(5, 0);
 
           if( isnan(transform.rot_x.value()) ) transform.rot_x = Angle();
           if( isnan(transform.rot_y.value()) ) transform.rot_y = Angle();
@@ -814,13 +823,13 @@ int main(int argc, char** argv)
           if( isnan(transform.pos.z()) ) transform.pos.z() = 0.0;
 
           float deltaR = sqrt(
-                              pow(rad2deg(matX.at<float>(0, 0)), 2) +
-                              pow(rad2deg(matX.at<float>(1, 0)), 2) +
-                              pow(rad2deg(matX.at<float>(2, 0)), 2));
+                              pow(rad2deg(matX(0, 0)), 2) +
+                              pow(rad2deg(matX(1, 0)), 2) +
+                              pow(rad2deg(matX(2, 0)), 2));
           float deltaT = sqrt(
-                              pow(matX.at<float>(3, 0) * 100, 2) +
-                              pow(matX.at<float>(4, 0) * 100, 2) +
-                              pow(matX.at<float>(5, 0) * 100, 2));
+                              pow(matX(3, 0) * 100, 2) +
+                              pow(matX(4, 0) * 100, 2) +
+                              pow(matX(5, 0) * 100, 2));
 
           if (deltaR < 0.1 && deltaT < 0.1) {
             break;
@@ -887,9 +896,11 @@ int main(int argc, char** argv)
 
       laserCloudCornerLastNum = laserCloudCornerLast->points.size();
       laserCloudSurfLastNum = laserCloudSurfLast->points.size();
-      if (laserCloudCornerLastNum > 10 && laserCloudSurfLastNum > 100) {
-        kdtreeCornerLast->setInputCloud(laserCloudCornerLast);
-        kdtreeSurfLast->setInputCloud(laserCloudSurfLast);
+
+      if (laserCloudCornerLastNum > 10 && laserCloudSurfLastNum > 100)
+      {
+        kdtreeCornerLast.setInputCloud(laserCloudCornerLast);
+        kdtreeSurfLast.setInputCloud(laserCloudSurfLast);
       }
 
       frameCount++;
